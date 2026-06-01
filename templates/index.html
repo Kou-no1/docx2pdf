@@ -1,0 +1,575 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DOCX → PDF 変換</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@300;400;500;700&family=DM+Mono:wght@400;500&display=swap');
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #f0f2f5;
+    --surface: #ffffff;
+    --surface2: #f7f8fa;
+    --border: #dde1e9;
+    --accent: #2563eb;
+    --accent2: #6d41e8;
+    --success: #16a34a;
+    --error: #dc2626;
+    --warn: #d97706;
+    --text: #1a1d27;
+    --muted: #6b7280;
+    --radius: 12px;
+    --font: 'Noto Sans JP', sans-serif;
+    --mono: 'DM Mono', monospace;
+  }
+
+  body {
+    font-family: var(--font);
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 48px 20px 80px;
+  }
+
+  /* ── Header ── */
+  header {
+    text-align: center;
+    margin-bottom: 48px;
+  }
+  .logo {
+    display: inline-flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 14px;
+  }
+  .logo-icon {
+    width: 44px; height: 44px;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 22px;
+  }
+  h1 {
+    font-size: clamp(22px, 4vw, 30px);
+    font-weight: 700;
+    letter-spacing: -0.5px;
+    background: linear-gradient(135deg, var(--accent) 30%, var(--accent2));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  .subtitle {
+    font-size: 14px;
+    color: var(--muted);
+    margin-top: 6px;
+    line-height: 1.6;
+  }
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: #eff4ff;
+    border: 1px solid #bfcfff;
+    border-radius: 20px;
+    padding: 4px 12px;
+    font-size: 12px;
+    color: var(--accent);
+    font-family: var(--mono);
+    margin-top: 12px;
+  }
+  .badge::before { content: '⬡'; }
+
+  /* ── Main card ── */
+  .card {
+    width: 100%;
+    max-width: 680px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    box-shadow: 0 2px 16px rgba(0,0,0,0.07);
+  }
+
+  /* ── Drop zone ── */
+  #dropzone {
+    padding: 52px 32px;
+    text-align: center;
+    cursor: pointer;
+    transition: background 0.2s, border-color 0.2s;
+    border-bottom: 1px solid var(--border);
+    position: relative;
+  }
+  #dropzone.dragover {
+    background: #eff4ff;
+    border-bottom-color: var(--accent);
+  }
+  #dropzone input[type=file] {
+    position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%;
+  }
+  .drop-icon {
+    font-size: 44px;
+    margin-bottom: 16px;
+    display: block;
+    filter: drop-shadow(0 0 10px rgba(37,99,235,0.18));
+    transition: transform 0.3s;
+  }
+  #dropzone:hover .drop-icon,
+  #dropzone.dragover .drop-icon { transform: translateY(-4px); }
+
+  .drop-title {
+    font-size: 17px;
+    font-weight: 600;
+    margin-bottom: 6px;
+  }
+  .drop-sub {
+    font-size: 13px;
+    color: var(--muted);
+    line-height: 1.6;
+  }
+  .drop-sub span {
+    font-family: var(--mono);
+    background: var(--surface2);
+    padding: 1px 6px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    font-size: 11px;
+  }
+
+  /* ── Controls ── */
+  .controls {
+    padding: 16px 24px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  #convertBtn {
+    flex: 1;
+    padding: 12px;
+    border: none;
+    border-radius: 8px;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    color: #fff;
+    font-family: var(--font);
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity 0.2s, transform 0.1s;
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+  }
+  #convertBtn:disabled { opacity: 0.4; cursor: not-allowed; }
+  #convertBtn:not(:disabled):hover { opacity: 0.9; transform: translateY(-1px); }
+  #convertBtn:not(:disabled):active { transform: translateY(0); }
+
+  #clearBtn {
+    padding: 12px 18px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: transparent;
+    color: var(--muted);
+    font-family: var(--font);
+    font-size: 13px;
+    cursor: pointer;
+    transition: color 0.2s, border-color 0.2s;
+  }
+  #clearBtn:hover { color: var(--text); border-color: var(--text); }
+
+  /* ── File list ── */
+  #fileList {
+    padding: 0 24px 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+  }
+  .file-item {
+    display: grid;
+    grid-template-columns: 28px 1fr auto;
+    align-items: center;
+    gap: 10px;
+    padding: 13px 0;
+    border-bottom: 1px solid var(--border);
+    animation: slideIn 0.2s ease;
+  }
+  .file-item:last-child { border-bottom: none; }
+
+  @keyframes slideIn {
+    from { opacity: 0; transform: translateY(-6px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  .file-icon {
+    width: 28px; height: 28px;
+    background: #eff4ff;
+    border: 1px solid #bfcfff;
+    border-radius: 6px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px;
+    flex-shrink: 0;
+  }
+  .file-info { min-width: 0; }
+  .file-name {
+    font-size: 13px;
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .file-meta {
+    font-size: 11px;
+    color: var(--muted);
+    font-family: var(--mono);
+    margin-top: 2px;
+  }
+  .file-status {
+    font-size: 12px;
+    white-space: nowrap;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  /* Status badges */
+  .st-waiting { color: var(--muted); }
+  .st-converting { color: var(--warn); }
+  .st-done { color: var(--success); }
+  .st-error { color: var(--error); }
+
+  .spinner {
+    display: inline-block;
+    width: 12px; height: 12px;
+    border: 2px solid currentColor;
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .dl-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 10px;
+    background: #f0faf4;
+    border: 1px solid #86efac;
+    border-radius: 6px;
+    color: var(--success);
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    text-decoration: none;
+    transition: background 0.15s;
+    font-family: var(--font);
+  }
+  .dl-btn:hover { background: #dcfce7; }
+
+  .dl-all-wrap {
+    padding: 16px 24px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .dl-all-wrap.hidden { display: none; }
+  .summary { font-size: 13px; color: var(--muted); }
+
+  #dlAllBtn {
+    padding: 9px 20px;
+    border: none;
+    border-radius: 8px;
+    background: #f0faf4;
+    border: 1px solid #86efac;
+    color: var(--success);
+    font-family: var(--font);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    display: flex; align-items: center; gap: 6px;
+    transition: background 0.15s;
+  }
+  #dlAllBtn:hover { background: #dcfce7; }
+
+  /* ── Empty state ── */
+  #emptyState {
+    padding: 28px;
+    text-align: center;
+    color: var(--muted);
+    font-size: 13px;
+  }
+
+  /* ── Info strip ── */
+  .info-strip {
+    width: 100%;
+    max-width: 680px;
+    margin-top: 20px;
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .info-pill {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 14px;
+    font-size: 12px;
+    color: var(--muted);
+    flex: 1;
+    min-width: 180px;
+  }
+  .info-pill .icon { font-size: 16px; }
+  .info-pill strong { color: var(--text); font-weight: 500; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <div class="logo-icon">📄</div>
+    <h1>DOCX → PDF 変換</h1>
+  </div>
+  <p class="subtitle">
+    WordファイルをPDFに高品質変換<br>
+    Wordの「名前を付けて保存→PDF」と同等のレイアウトを再現
+  </p>
+  <div class="badge">LibreOffice Headless エンジン</div>
+</header>
+
+<div class="card">
+  <!-- Drop zone -->
+  <div id="dropzone">
+    <input type="file" id="fileInput" accept=".docx,.doc" multiple>
+    <span class="drop-icon">⬇️</span>
+    <div class="drop-title">ここにドラッグ＆ドロップ</div>
+    <div class="drop-sub">
+      またはクリックしてファイルを選択<br>
+      <span>.docx</span>&nbsp;<span>.doc</span> &nbsp;最大 50MB / ファイル &nbsp;複数同時変換対応
+    </div>
+  </div>
+
+  <!-- Controls -->
+  <div class="controls">
+    <button id="convertBtn" disabled>
+      <span>🔄</span>変換開始
+    </button>
+    <button id="clearBtn">クリア</button>
+  </div>
+
+  <!-- File list -->
+  <div id="emptyState">ファイルを追加してください</div>
+  <div id="fileList"></div>
+
+  <!-- Download all -->
+  <div class="dl-all-wrap hidden" id="dlAllWrap">
+    <span class="summary" id="dlSummary"></span>
+    <button id="dlAllBtn">⬇ すべてダウンロード</button>
+  </div>
+</div>
+
+<!-- Info pills -->
+<div class="info-strip">
+  <div class="info-pill">
+    <span class="icon">🔒</span>
+    <span>ファイルは<strong>1時間後に自動削除</strong></span>
+  </div>
+  <div class="info-pill">
+    <span class="icon">⚡</span>
+    <span><strong>複数ファイル</strong>を同時変換</span>
+  </div>
+  <div class="info-pill">
+    <span class="icon">📐</span>
+    <span>図形・表・画像を<strong>完全再現</strong></span>
+  </div>
+</div>
+
+<script>
+  const dropzone = document.getElementById('dropzone');
+  const fileInput = document.getElementById('fileInput');
+  const fileList  = document.getElementById('fileList');
+  const emptyState = document.getElementById('emptyState');
+  const convertBtn = document.getElementById('convertBtn');
+  const clearBtn   = document.getElementById('clearBtn');
+  const dlAllWrap  = document.getElementById('dlAllWrap');
+  const dlSummary  = document.getElementById('dlSummary');
+  const dlAllBtn   = document.getElementById('dlAllBtn');
+
+  let pendingFiles = [];   // File objects staged for upload
+  let jobs = {};           // job_id → { name, status, pdf_url, output_name, size }
+  let polling = null;
+
+  /* ── Drag & drop ── */
+  ['dragenter','dragover'].forEach(e => dropzone.addEventListener(e, ev => {
+    ev.preventDefault(); dropzone.classList.add('dragover');
+  }));
+  ['dragleave','drop'].forEach(e => dropzone.addEventListener(e, ev => {
+    ev.preventDefault(); dropzone.classList.remove('dragover');
+  }));
+  dropzone.addEventListener('drop', ev => addFiles(ev.dataTransfer.files));
+  fileInput.addEventListener('change', () => addFiles(fileInput.files));
+
+  function addFiles(fileObjs) {
+    const exts = ['.docx', '.doc'];
+    [...fileObjs].forEach(f => {
+      const ext = f.name.slice(f.name.lastIndexOf('.')).toLowerCase();
+      if (!exts.includes(ext)) return;
+      if (pendingFiles.find(p => p.name === f.name && p.size === f.size)) return;
+      pendingFiles.push(f);
+    });
+    fileInput.value = '';
+    renderPending();
+  }
+
+  function renderPending() {
+    emptyState.style.display = pendingFiles.length || Object.keys(jobs).length ? 'none' : 'block';
+    convertBtn.disabled = pendingFiles.length === 0;
+
+    // Remove pending rows first
+    fileList.querySelectorAll('.file-item[data-pending]').forEach(el => el.remove());
+
+    pendingFiles.forEach((f, i) => {
+      const row = document.createElement('div');
+      row.className = 'file-item';
+      row.dataset.pending = i;
+      row.innerHTML = `
+        <div class="file-icon">📝</div>
+        <div class="file-info">
+          <div class="file-name">${esc(f.name)}</div>
+          <div class="file-meta">${fmtSize(f.size)}</div>
+        </div>
+        <div class="file-status st-waiting">待機中</div>`;
+      fileList.appendChild(row);
+    });
+  }
+
+  /* ── Convert ── */
+  convertBtn.addEventListener('click', async () => {
+    if (pendingFiles.length === 0) return;
+    convertBtn.disabled = true;
+
+    const fd = new FormData();
+    pendingFiles.forEach(f => fd.append('files', f));
+    pendingFiles = [];
+    renderPending();
+
+    try {
+      const res = await fetch('/upload', { method: 'POST', body: fd });
+      const data = await res.json();
+
+      (data.jobs || []).forEach(j => {
+        if (j.error) {
+          jobs[`err-${Date.now()}-${Math.random()}`] = { name: j.name, status: 'error', error: j.error };
+        } else {
+          jobs[j.job_id] = { name: j.name, status: 'queued' };
+        }
+      });
+
+      renderJobs();
+      startPolling();
+    } catch (e) {
+      alert('アップロードに失敗しました: ' + e.message);
+      convertBtn.disabled = false;
+    }
+  });
+
+  /* ── Render job rows ── */
+  function renderJobs() {
+    // Clear job rows and re-render
+    fileList.querySelectorAll('.file-item[data-job]').forEach(el => el.remove());
+    emptyState.style.display = Object.keys(jobs).length || pendingFiles.length ? 'none' : 'block';
+
+    let doneCount = 0, totalCount = Object.keys(jobs).length;
+
+    Object.entries(jobs).forEach(([jid, j]) => {
+      let statusHtml = '';
+      if (j.status === 'queued')      statusHtml = `<span class="st-waiting">待機中</span>`;
+      else if (j.status === 'converting') statusHtml = `<span class="st-converting"><span class="spinner"></span> 変換中</span>`;
+      else if (j.status === 'done') {
+        doneCount++;
+        const sz = j.file_size ? ` · ${fmtSize(j.file_size)}` : '';
+        statusHtml = `<a class="dl-btn" href="/download/${jid}" download="${esc(j.output_name || j.name)}">⬇ PDF${sz}</a>`;
+      } else {
+        statusHtml = `<span class="st-error" title="${esc(j.error || '')}">⚠ 失敗</span>`;
+      }
+
+      const row = document.createElement('div');
+      row.className = 'file-item';
+      row.dataset.job = jid;
+      row.innerHTML = `
+        <div class="file-icon">${j.status === 'done' ? '📕' : j.status === 'error' ? '⛔' : '📝'}</div>
+        <div class="file-info">
+          <div class="file-name">${esc(j.name)}</div>
+          <div class="file-meta">${j.output_name ? esc(j.output_name) : 'DOCX'}</div>
+        </div>
+        <div class="file-status">${statusHtml}</div>`;
+      fileList.appendChild(row);
+    });
+
+    // Download all button
+    if (doneCount > 1) {
+      dlAllWrap.classList.remove('hidden');
+      dlSummary.textContent = `${doneCount} / ${totalCount} ファイル変換完了`;
+    } else {
+      dlAllWrap.classList.add('hidden');
+    }
+  }
+
+  /* ── Polling ── */
+  function startPolling() {
+    if (polling) return;
+    polling = setInterval(async () => {
+      const pending = Object.entries(jobs).filter(([,j]) => j.status === 'queued' || j.status === 'converting');
+      if (pending.length === 0) { clearInterval(polling); polling = null; return; }
+
+      await Promise.all(pending.map(async ([jid]) => {
+        try {
+          const res = await fetch(`/status/${jid}`);
+          const data = await res.json();
+          jobs[jid] = { ...jobs[jid], ...data };
+        } catch {}
+      }));
+      renderJobs();
+    }, 1200);
+  }
+
+  /* ── Download all ── */
+  dlAllBtn.addEventListener('click', () => {
+    Object.entries(jobs).forEach(([jid, j]) => {
+      if (j.status !== 'done') return;
+      const a = document.createElement('a');
+      a.href = `/download/${jid}`;
+      a.download = j.output_name || 'document.pdf';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    });
+  });
+
+  /* ── Clear ── */
+  clearBtn.addEventListener('click', () => {
+    pendingFiles = [];
+    jobs = {};
+    if (polling) { clearInterval(polling); polling = null; }
+    fileList.innerHTML = '';
+    dlAllWrap.classList.add('hidden');
+    emptyState.style.display = 'block';
+    convertBtn.disabled = true;
+  });
+
+  /* ── Helpers ── */
+  function esc(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+  function fmtSize(b) {
+    if (b < 1024) return b + ' B';
+    if (b < 1024**2) return (b/1024).toFixed(1) + ' KB';
+    return (b/1024**2).toFixed(1) + ' MB';
+  }
+</script>
+</body>
+</html>
