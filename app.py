@@ -63,7 +63,8 @@ def convert_one(job_id: str, src_path: Path, original_name: str):
         print(f"[START] {job_id} {original_name}", flush=True)
 
         result = run_soffice(
-            ["--headless", "--convert-to", "pdf",
+            [f"-env:UserInstallation=file://{work_dir}/profile",
+             "--headless", "--convert-to", "pdf",
              "--outdir", str(work_dir), str(dest)],
             capture_output=True,
             text=True,
