@@ -28,4 +28,4 @@ RUN mkdir -p uploads converted
 ENV PORT=10000
 EXPOSE 10000
 
-CMD ["sh", "-c", "gunicorn app:app --bind 0.0.0.0:$PORT --timeout 120 --workers 2"]
+CMD ["sh", "-c", "gunicorn app:app --bind 0.0.0.0:$PORT --timeout 300 --workers 1 --threads 8"]
