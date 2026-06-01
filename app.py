@@ -7,7 +7,6 @@ import time
 from pathlib import Path
 from flask import Flask, request, jsonify, send_file, render_template
 
-# Inject skill scripts path for soffice helper
 sys.path.insert(0, str(Path(__file__).parent / "scripts"))
 from office.soffice import run_soffice
 
@@ -21,20 +20,26 @@ CONVERTED_DIR.mkdir(exist_ok=True)
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
 ALLOWED_EXT = {".docx", ".doc"}
 
-# Track job statuses
 jobs: dict[str, dict] = {}
 jobs_lock = threading.Lock()
 
+# 一括変換キュー: (batch_id, [(job_id, src_path, original_name), ...])
+batch_queue: list = []
+batch_lock = threading.Lock()
+batch_event = threading.Event()
+
 
 def cleanup_old_files():
-    """Remove files older than 1 hour."""
     while True:
         now = time.time()
         for d in [UPLOAD_DIR, CONVERTED_DIR]:
             for f in d.iterdir():
                 try:
                     if now - f.stat().st_mtime > 3600:
-                        f.unlink(missing_ok=True)
+                        if f.is_file():
+                            f.unlink(missing_ok=True)
+                        elif f.is_dir():
+                            shutil.rmtree(f, ignore_errors=True)
                 except Exception:
                     pass
         time.sleep(300)
@@ -43,58 +48,96 @@ def cleanup_old_files():
 threading.Thread(target=cleanup_old_files, daemon=True).start()
 
 
-def convert_docx_to_pdf(job_id: str, src_path: Path, original_name: str):
-    """Run LibreOffice conversion in a dedicated temp dir."""
-    work_dir = CONVERTED_DIR / job_id
-    work_dir.mkdir(exist_ok=True)
+def batch_worker():
+    """
+    キューに溜まったファイルをまとめて1回のLibreOffice起動で変換する。
+    200ms待って新規ファイルをまとめてからバッチ実行。
+    """
+    while True:
+        batch_event.wait()
+        batch_event.clear()
 
-    try:
-        with jobs_lock:
-            jobs[job_id]["status"] = "converting"
+        # 200ms待って追加ファイルをまとめる
+        time.sleep(0.2)
 
-        # Copy source into work dir to avoid path issues
-        tmp_src = work_dir / src_path.name
-        shutil.copy2(src_path, tmp_src)
+        with batch_lock:
+            if not batch_queue:
+                continue
+            batch = batch_queue[:]
+            batch_queue.clear()
 
-        result = run_soffice(
-            [
-                "--headless",
-                "--convert-to", "pdf",
-                "--outdir", str(work_dir),
-                str(tmp_src),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
+        # 作業ディレクトリ作成
+        batch_id = uuid.uuid4().hex
+        work_dir = CONVERTED_DIR / batch_id
+        work_dir.mkdir(exist_ok=True)
 
-        if result.returncode != 0:
-            raise RuntimeError(result.stderr or "LibreOffice conversion failed")
+        # job_id → original_name のマッピング
+        job_map = {}  # filename_in_workdir → (job_id, original_name)
 
-        # Find the output PDF
-        pdf_files = list(work_dir.glob("*.pdf"))
-        if not pdf_files:
-            raise RuntimeError("LibreOffice produced no PDF output")
+        # ファイルをwork_dirにコピー（ファイル名衝突を避けるためjob_idをprefixに）
+        src_files = []
+        for job_id, src_path, original_name in batch:
+            ext = src_path.suffix
+            dest_name = f"{job_id}{ext}"
+            dest = work_dir / dest_name
+            try:
+                shutil.copy2(src_path, dest)
+                src_files.append(str(dest))
+                job_map[dest_name] = (job_id, original_name)
+                with jobs_lock:
+                    jobs[job_id]["status"] = "converting"
+            except Exception as e:
+                with jobs_lock:
+                    jobs[job_id].update({"status": "error", "error": str(e)})
 
-        pdf_path = pdf_files[0]
-        output_name = Path(original_name).stem + ".pdf"
+        if not src_files:
+            continue
 
-        with jobs_lock:
-            jobs[job_id].update(
-                {
-                    "status": "done",
-                    "pdf_path": str(pdf_path),
-                    "output_name": output_name,
-                    "file_size": pdf_path.stat().st_size,
-                }
+        # 1回のLibreOffice起動で全ファイルを変換
+        try:
+            result = run_soffice(
+                ["--headless", "--convert-to", "pdf", "--outdir", str(work_dir)]
+                + src_files,
+                capture_output=True,
+                text=True,
+                timeout=300,
             )
+        except Exception as e:
+            # LibreOffice自体が失敗した場合は全ジョブをエラーに
+            for job_id, src_path, _ in batch:
+                with jobs_lock:
+                    jobs[job_id].update({"status": "error", "error": str(e)})
+                src_path.unlink(missing_ok=True)
+            continue
 
-    except Exception as e:
-        with jobs_lock:
-            jobs[job_id].update({"status": "error", "error": str(e)})
-    finally:
-        # Clean up uploaded source
-        src_path.unlink(missing_ok=True)
+        # 結果を各ジョブに反映
+        for dest_name, (job_id, original_name) in job_map.items():
+            pdf_name = Path(dest_name).stem + ".pdf"
+            pdf_path = work_dir / pdf_name
+            src_path = next((s for _, s, _ in batch if job_id in s.name or f"{job_id}" in Path(s).stem), None)
+
+            if pdf_path.exists():
+                output_name = Path(original_name).stem + ".pdf"
+                with jobs_lock:
+                    jobs[job_id].update({
+                        "status": "done",
+                        "pdf_path": str(pdf_path),
+                        "output_name": output_name,
+                        "file_size": pdf_path.stat().st_size,
+                    })
+            else:
+                with jobs_lock:
+                    jobs[job_id].update({
+                        "status": "error",
+                        "error": "変換後のPDFが見つかりません",
+                    })
+
+        # アップロードファイルを削除
+        for job_id, src_path, _ in batch:
+            src_path.unlink(missing_ok=True)
+
+
+threading.Thread(target=batch_worker, daemon=True).start()
 
 
 @app.route("/")
@@ -109,6 +152,8 @@ def upload():
         return jsonify({"error": "ファイルが選択されていません"}), 400
 
     results = []
+    new_batch = []
+
     for f in files:
         ext = Path(f.filename).suffix.lower()
         if ext not in ALLOWED_EXT:
@@ -125,19 +170,15 @@ def upload():
             continue
 
         with jobs_lock:
-            jobs[job_id] = {
-                "status": "queued",
-                "original_name": f.filename,
-            }
+            jobs[job_id] = {"status": "queued", "original_name": f.filename}
 
-        t = threading.Thread(
-            target=convert_docx_to_pdf,
-            args=(job_id, save_path, f.filename),
-            daemon=True,
-        )
-        t.start()
-
+        new_batch.append((job_id, save_path, f.filename))
         results.append({"name": f.filename, "job_id": job_id})
+
+    if new_batch:
+        with batch_lock:
+            batch_queue.extend(new_batch)
+        batch_event.set()
 
     return jsonify({"jobs": results})
 
