@@ -54,12 +54,12 @@ def convert_batch(items: list):
     work_dir = CONVERTED_DIR / batch_id
     work_dir.mkdir(exist_ok=True)
 
-    job_map = {}  # dest_stem → (job_id, original_name)
+    job_map = {}
     src_files = []
 
     for job_id, src_path, original_name in items:
         ext = src_path.suffix.lower()
-        dest_name = f"{job_id}{ext}"   # ASCII only, no special chars
+        dest_name = f"{job_id}{ext}"
         dest = work_dir / dest_name
         try:
             shutil.copy2(src_path, dest)
@@ -68,65 +68,48 @@ def convert_batch(items: list):
             with jobs_lock:
                 jobs[job_id]["status"] = "converting"
         except Exception as e:
+            print(f"[COPY ERROR] {job_id}: {e}", flush=True)
             with jobs_lock:
                 jobs[job_id].update({"status": "error", "error": str(e)})
 
     if not src_files:
         return
 
-    try:
-        result = run_soffice(
-            ["--headless", "--convert-to", "pdf", "--outdir", str(work_dir)]
-            + src_files,
-            capture_output=True,
-            text=True,
-            timeout=300,
-        )
-    except Exception as e:
-        for job_id, _, _ in items:
-            with jobs_lock:
-                jobs[job_id].update({"status": "error", "error": str(e)})
-        return
-    finally:
-        for _, src_path, _ in items:
-            src_path.unlink(missing_ok=True)
-
-    # 結果を反映
+    # 1ファイルずつ変換（安定性優先）
     for job_id, (dest, original_name) in job_map.items():
         pdf_path = dest.with_suffix(".pdf")
-        if pdf_path.exists():
-            with jobs_lock:
-                jobs[job_id].update({
-                    "status": "done",
-                    "pdf_path": str(pdf_path),
-                    "output_name": Path(original_name).stem + ".pdf",
-                    "file_size": pdf_path.stat().st_size,
-                })
-        else:
-            # 個別にリトライ
-            try:
-                r2 = run_soffice(
-                    ["--headless", "--convert-to", "pdf",
-                     "--outdir", str(work_dir), str(dest)],
-                    capture_output=True, text=True, timeout=120,
-                )
-                if pdf_path.exists():
-                    with jobs_lock:
-                        jobs[job_id].update({
-                            "status": "done",
-                            "pdf_path": str(pdf_path),
-                            "output_name": Path(original_name).stem + ".pdf",
-                            "file_size": pdf_path.stat().st_size,
-                        })
-                else:
-                    with jobs_lock:
-                        jobs[job_id].update({
-                            "status": "error",
-                            "error": r2.stderr or "変換後PDFが見つかりません",
-                        })
-            except Exception as e:
+        try:
+            print(f"[CONVERT] {job_id} ({original_name})", flush=True)
+            result = run_soffice(
+                ["--headless", "--convert-to", "pdf",
+                 "--outdir", str(work_dir), str(dest)],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            print(f"[SOFFICE rc={result.returncode}] stdout: {result.stdout[:200]} stderr: {result.stderr[:200]}", flush=True)
+
+            if pdf_path.exists():
+                print(f"[DONE] {job_id} -> {pdf_path.stat().st_size} bytes", flush=True)
                 with jobs_lock:
-                    jobs[job_id].update({"status": "error", "error": str(e)})
+                    jobs[job_id].update({
+                        "status": "done",
+                        "pdf_path": str(pdf_path),
+                        "output_name": Path(original_name).stem + ".pdf",
+                        "file_size": pdf_path.stat().st_size,
+                    })
+            else:
+                msg = result.stderr or result.stdout or "PDFが生成されませんでした"
+                print(f"[FAIL] {job_id}: {msg}", flush=True)
+                with jobs_lock:
+                    jobs[job_id].update({"status": "error", "error": msg})
+        except Exception as e:
+            print(f"[EXCEPTION] {job_id}: {e}", flush=True)
+            with jobs_lock:
+                jobs[job_id].update({"status": "error", "error": str(e)})
+
+    for _, src_path, _ in items:
+        src_path.unlink(missing_ok=True)
 
 
 def batch_worker():
