@@ -20,6 +20,9 @@ CONVERTED_DIR.mkdir(exist_ok=True)
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
 ALLOWED_EXT = {".docx", ".doc"}
 
+# 無料プランRAM 512MB制限 → LibreOfficeは同時1プロセスのみ
+soffice_sem = threading.Semaphore(1)
+
 jobs: dict[str, dict] = {}
 jobs_lock = threading.Lock()
 
@@ -47,10 +50,8 @@ threading.Thread(target=cleanup_old_files, daemon=True).start()
 
 
 def convert_one(job_id: str, src_path: Path, original_name: str):
-    """1ファイルを変換する。アップロード時に直接スレッドで呼ぶ。"""
     work_dir = CONVERTED_DIR / job_id
     work_dir.mkdir(exist_ok=True)
-
     dest = work_dir / f"{job_id}{src_path.suffix.lower()}"
 
     try:
@@ -60,18 +61,24 @@ def convert_one(job_id: str, src_path: Path, original_name: str):
         shutil.copy2(src_path, dest)
         src_path.unlink(missing_ok=True)
 
-        print(f"[START] {job_id} {original_name}", flush=True)
+        print(f"[WAIT] {job_id} {original_name}", flush=True)
 
-        result = run_soffice(
-            [f"-env:UserInstallation=file://{work_dir}/profile",
-             "--headless", "--convert-to", "pdf",
-             "--outdir", str(work_dir), str(dest)],
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
+        # セマフォで同時実行を1つに制限
+        with soffice_sem:
+            print(f"[START] {job_id} {original_name}", flush=True)
+            profile_dir = work_dir / "profile"
+            profile_dir.mkdir(exist_ok=True)
 
-        print(f"[RC={result.returncode}] {job_id} stdout={result.stdout[:300]} stderr={result.stderr[:300]}", flush=True)
+            result = run_soffice(
+                [f"-env:UserInstallation=file://{profile_dir}",
+                 "--headless", "--convert-to", "pdf",
+                 "--outdir", str(work_dir), str(dest)],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+
+        print(f"[RC={result.returncode}] {job_id} stdout={result.stdout[:200]} stderr={result.stderr[:200]}", flush=True)
 
         pdf_path = dest.with_suffix(".pdf")
         if pdf_path.exists():
